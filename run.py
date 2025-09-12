@@ -8,7 +8,8 @@ import skimage as sk
 import skimage.io as skio
 import matplotlib.pyplot as plt
 from pyramid import gaussian_downsample, build_gaussian_pyramid
-
+import os
+import math
 
 def read_in_image(imname, plot=False):
     im = skio.imread(imname)
@@ -30,37 +31,55 @@ def read_in_image(imname, plot=False):
     # Return in BGR format
     return np.array([b, g, r])
 
+
 # Returns tuple of (aligned img, optim_dx, optim_dy)
-def align(img, ref_img, dx_VALS, crop_factor = 0.1):
-    min_L2 = np.linalg.norm(img - ref_img)
-    optim_dx = None
-    optim_dy = None
+def align(dx_VAL, crop_factor = 0.1, level=0, pyramid=None, ref_pyramid=None, current_dx=0, current_dy=0):
 
-    optim_img = img
 
-    ref_cropped = crop_center(ref_img, crop_factor)
+    dx_VALS = range(-dx_VAL, dx_VAL + 1, 1)
+
+    img_level = pyramid[level]
+    ref_level = ref_pyramid[level]
+    ref_cropped = crop_center(ref_level, crop_factor)
+    v2 = ref_cropped.flatten() - np.mean(ref_cropped)
+
+
+
+    # Multiply our displacements by 2 since we upsampled by 2 compared to previous call
+    current_dx *= 2
+    current_dy *= 2
+
+
+    max_L = 0
+    optim_dx = current_dx
+    optim_dy = current_dy
+    optim_img = img_level
+
     for dx in dx_VALS:
         for dy in dx_VALS:
-            img_shifted  = np.roll(img, shift=dy, axis=0)
-            img_shifted = np.roll(img_shifted, shift=dx, axis=1)
+            dx_total = dx + current_dx
+            dy_total = dy + current_dy
+
+            img_shifted  = np.roll(img_level, shift=dy_total, axis=0)
+            img_shifted = np.roll(img_shifted, shift=dx_total, axis=1)
 
             img_cropped = crop_center(img_shifted, crop_factor)
-            
-            
-
-            # Take the difference
-            difference = img_cropped - ref_cropped
 
             # Compute metric
-            L2 = np.linalg.norm(difference)
+            v1 = img_cropped.flatten() - np.mean(img_cropped)
+            L = np.dot((v1 / np.linalg.norm(v1)), (v2 / np.linalg.norm(v2)))
 
-            if L2 < min_L2:
-                min_L2 = L2
-                optim_dx = dx
-                optim_dy = dy
+            if L > max_L:
+                max_L = L
+                optim_dx = dx_total
+                optim_dy = dy_total
                 optim_img = img_shifted
 
-    return (optim_img, optim_dx, optim_dy)
+    if level + 1 < len(pyramid):
+        return align(dx_VAL//2, crop_factor, level + 1, pyramid, ref_pyramid, optim_dx, optim_dy)
+    else:
+        return (optim_img, optim_dx, optim_dy)
+    
     
 def crop_center(img, crop_factor=0.1):
     border_x = int(crop_factor * img.shape[0])
@@ -69,15 +88,25 @@ def crop_center(img, crop_factor=0.1):
 
 
 
-def align_images(img_seperated, dx_VALS, metric="L2_Distance", crop_factor=0.1):
+def align_images(img_seperated, dx_VAL, crop_factor=0.1):
     # Green is our reference image
     ref_img = img_seperated[1]
 
+    ref_img = crop_center(ref_img, crop_factor)
+    blue = crop_center(img_seperated[0], crop_factor)
+    red = crop_center(img_seperated[2], crop_factor)
+
+
+    blue_pyramid = list(reversed(build_gaussian_pyramid(blue)))
+    red_pyramid = list(reversed(build_gaussian_pyramid(red)))
+    ref_pyramid = list(reversed(build_gaussian_pyramid(ref_img)))
+
     # Align blue to reference
-    aligned_blue, blue_dx, blue_dy = align(img_seperated[0], ref_img, dx_VALS, crop_factor=crop_factor)
+    aligned_blue, blue_dx, blue_dy = align(dx_VAL, crop_factor=crop_factor, level=0, pyramid=blue_pyramid, ref_pyramid=ref_pyramid)
+
 
     # Align red to reference
-    aligned_red, red_dx, red_dy = align(img_seperated[2], ref_img, dx_VALS, crop_factor=crop_factor)
+    aligned_red, red_dx, red_dy = align(dx_VAL, crop_factor=crop_factor, level=0, pyramid=red_pyramid, ref_pyramid=ref_pyramid)
 
     # Stack images
     im_out = np.dstack([aligned_red, ref_img, aligned_blue])
@@ -88,51 +117,60 @@ def align_images(img_seperated, dx_VALS, metric="L2_Distance", crop_factor=0.1):
 
     return im_out
 
-
-
-
-img_seperated = read_in_image(imname='data/monastery.jpg', plot=False)
-plt.imshow(skio.imread('data/monastery.jpg'), cmap="grey")
-plt.show()
-
-max_displacement = 15
+max_displacement = 30
 crop_factor = 0.1
 
-optimal_color_image = align_images(img_seperated, dx_VALS=range(-max_displacement, max_displacement + 1), crop_factor=crop_factor)
-im_out = crop_center(optimal_color_image, crop_factor=crop_factor)
-plt.imshow(im_out)
-plt.show()
-
-
-# print(img_seperated.shape)
-
-# # Create a figure with 1 row and 2 columns of axes
-# fig, axes = plt.subplots(1, 2, figsize=(10, 4))  # 1 row, 2 columns
-
-# blue = img_seperated[0]
-# blue_shifted = np.roll(blue, 100, axis=0)
-
-# axes[0].imshow(blue, cmap="gray")
-# axes[1].imshow(blue_shifted, cmap="gray")
-
-
-# plt.show()
+def colorize_all_images():
+    data_dir = "data"
+    files = [f for f in os.listdir(data_dir) if f.lower().endswith(('.tif', '.jpg'))]
 
 
 
-# align the images
-# functions that might be useful for aligning the images include:
-# np.roll, np.sum, sk.transform.rescale (for multiscale)
+    n = len(files)
+    cols = 3
+    rows = math.ceil(n / cols)
 
-### ag = align(g, b)
-### ar = align(r, b)
-# create a color image
-#im_out = np.dstack([ar, ag, b])
+    fig, axes = plt.subplots(rows, cols, figsize=(5*cols, 5*rows))
+    axes = axes.flatten()
 
-# save the image
-#fname = '/out_path/out_fname.jpg'
-#skio.imsave(fname, im_out)
+    for ax, fname in zip(axes, files):
+        img = read_in_image(imname=os.path.join(data_dir, fname), plot=False)
+        optimal = align_images(img, dx_VAL=max_displacement, crop_factor=crop_factor)
+        im_out = crop_center(optimal, crop_factor=crop_factor)
+        ax.imshow(im_out)
+        ax.set_title(fname, fontsize=12)
+        ax.axis("off")
 
-# display the image
-#skio.imshow(im_out)
-#skio.show()
+    for ax in axes[len(files):]:
+        ax.axis("off")
+
+    plt.tight_layout()
+    plt.show()
+
+
+def colorize_single_image(imname):
+    img = read_in_image(imname)
+    optimal = align_images(img, dx_VAL=max_displacement, crop_factor=crop_factor)
+    im_out = crop_center(optimal, crop_factor=crop_factor)
+
+    os.makedirs("output", exist_ok=True)
+
+    base_name = os.path.splitext(os.path.basename(imname))[0]
+    out_path = os.path.join("output", f"{base_name}.jpg")
+
+    plt.imsave(out_path, im_out)
+    plt.imshow(im_out)
+    plt.title(imname)
+    plt.show()
+
+def colorize_all_images_in_data():
+    data_dir = "data"
+    files = [f for f in os.listdir(data_dir) if f.lower().endswith(('.tif', '.jpg'))]
+
+    for fname in files:
+        full_path = os.path.join(data_dir, fname)
+        print(f"Processing: {fname}")
+        colorize_single_image(full_path)
+
+# Example usage
+colorize_all_images_in_data()
